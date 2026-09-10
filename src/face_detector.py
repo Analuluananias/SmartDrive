@@ -1,6 +1,7 @@
 import cv2
 import time
 import mediapipe as mp
+import winsound
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -14,6 +15,9 @@ from config import (
     EAR_THRESHOLD,
     EYES_CLOSED_SECONDS
 )
+
+from metrics import DrowsinessMetrics
+from drowsiness import classify_drowsiness
 
 
 MODEL_PATH = "assets/models/face_landmarker.task"
@@ -43,11 +47,17 @@ def main():
         options
     )
 
+    # Cria o sistema de métricas
+    metrics = DrowsinessMetrics()
+
     print("SmartDrive - detector facial iniciado!")
     print("Pressione ESC para fechar.")
 
     frame_timestamp = 0
     eyes_closed_start = None
+
+    # Controle do alerta sonoro
+    alert_active = False
 
     while True:
         success, frame = camera.read()
@@ -58,8 +68,6 @@ def main():
 
         # Espelha a câmera
         frame = cv2.flip(frame, 1)
-
-        height, width, _ = frame.shape
 
         # Converte BGR para RGB
         rgb_frame = cv2.cvtColor(
@@ -101,7 +109,19 @@ def main():
 
                 current_time = time.time()
 
-                if average_ear < EAR_THRESHOLD:
+                # Verifica se os olhos estão fechados
+                eyes_closed = (
+                    average_ear < EAR_THRESHOLD
+                )
+
+                # Atualiza as métricas
+                metrics.update(
+                    eyes_closed,
+                    current_time
+                )
+
+                # Controle do tempo de olhos fechados
+                if eyes_closed:
 
                     if eyes_closed_start is None:
                         eyes_closed_start = current_time
@@ -115,6 +135,23 @@ def main():
                     eyes_closed_start = None
                     closed_duration = 0.0
 
+                # Calcula PERCLOS
+                perclos = metrics.get_perclos()
+
+                # Classifica o estado de sonolência
+                drowsiness_state = classify_drowsiness(
+                    average_ear,
+                    closed_duration,
+                    perclos
+                )
+
+                # Se os olhos estiverem abertos novamente,
+                # o estado volta para NORMAL.
+                if not eyes_closed and closed_duration == 0:
+                    if average_ear >= EAR_THRESHOLD:
+                        drowsiness_state = "NORMAL"
+
+                # Mostra o EAR
                 cv2.putText(
                     frame,
                     f"EAR: {average_ear:.3f}",
@@ -125,6 +162,7 @@ def main():
                     2
                 )
 
+                # Mostra tempo de olhos fechados
                 cv2.putText(
                     frame,
                     f"Olhos fechados: {closed_duration:.1f}s",
@@ -135,29 +173,72 @@ def main():
                     2
                 )
 
-                if closed_duration >= EYES_CLOSED_SECONDS:
-
-                    cv2.putText(
-                        frame,
-                        "POSSIVEL SONOLENCIA",
-                        (20, 155),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 0, 255),
-                        2
-                    )
-
-                # Mostra o EAR na tela
+                # Mostra quantidade de piscadas
                 cv2.putText(
                     frame,
-                    f"EAR: {average_ear:.3f}",
-                    (20, 80),
+                    f"Piscadas: {metrics.total_blinks}",
+                    (20, 150),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
+                    0.7,
                     (255, 255, 255),
                     2
                 )
 
+                # Mostra PERCLOS
+                cv2.putText(
+                    frame,
+                    f"PERCLOS: {perclos:.1f}%",
+                    (20, 185),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 255, 255),
+                    2
+                )
+
+                # Define o texto e a cor do estado
+                if drowsiness_state == "NORMAL":
+                    state_text = "NORMAL"
+                    state_color = (0, 255, 0)
+
+                elif drowsiness_state == "POSSIVEL SONOLENCIA":
+                    state_text = "POSSIVEL SONOLENCIA"
+                    state_color = (0, 255, 255)
+
+                elif drowsiness_state == "ATENCAO":
+                    state_text = "SONOLENCIA DETECTADA"
+                    state_color = (0, 0, 255)
+
+                elif drowsiness_state == "ALERTA":
+                    state_text = "SONOLENCIA DETECTADA"
+                    state_color = (0, 0, 255)
+
+                else:
+                    state_text = drowsiness_state
+                    state_color = (255, 255, 255)
+
+                # Alerta sonoro enquanto a sonolência estiver detectada
+                if drowsiness_state == "ALERTA":
+
+                    if not alert_active:
+                        alert_active = True
+
+                    winsound.Beep(1000, 500)
+
+                else:
+                    alert_active = False
+
+                # Mostra o estado de sonolência
+                cv2.putText(
+                    frame,
+                    f"ESTADO: {state_text}",
+                    (20, 225),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    state_color,
+                    2
+                )
+
+            # Indica que o rosto foi detectado
             cv2.putText(
                 frame,
                 "ROSTO DETECTADO",
@@ -170,6 +251,7 @@ def main():
 
         else:
 
+            # Indica que nenhum rosto foi encontrado
             cv2.putText(
                 frame,
                 "ROSTO NAO DETECTADO",
@@ -188,6 +270,7 @@ def main():
 
         key = cv2.waitKey(1) & 0xFF
 
+        # ESC fecha o programa
         if key == 27:
             break
 
