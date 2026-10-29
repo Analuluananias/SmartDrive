@@ -1,3 +1,4 @@
+import serial
 import cv2
 import time
 import mediapipe as mp
@@ -24,6 +25,25 @@ MODEL_PATH = "assets/models/face_landmarker.task"
 
 
 def main():
+
+    # Conecta ao ESP32 pela porta USB
+    esp32 = serial.Serial(
+        "COM5",
+        115200,
+        timeout=1
+    )
+
+    time.sleep(2)
+
+    ultimo_comando = ""
+
+    def enviar_comando(comando):
+        nonlocal ultimo_comando
+
+        if comando != ultimo_comando:
+            esp32.write((comando + "\n").encode("utf-8"))
+            ultimo_comando = comando
+
     camera = cv2.VideoCapture(0)
 
     if not camera.isOpened():
@@ -145,6 +165,12 @@ def main():
                     perclos
                 )
 
+                # Envia o estado para o ESP32
+                if drowsiness_state in ("ATENCAO", "ALERTA"):
+                    enviar_comando("SONOLENCIA")
+                else:
+                    enviar_comando("ROSTO")
+
                 # Se os olhos estiverem abertos novamente,
                 # o estado volta para NORMAL.
                 if not eyes_closed and closed_duration == 0:
@@ -238,6 +264,9 @@ def main():
                     2
                 )
 
+            # Envia comando quando o rosto é detectado
+            # (comandos de sonolência são enviados acima)
+
             # Indica que o rosto foi detectado
             cv2.putText(
                 frame,
@@ -250,6 +279,9 @@ def main():
             )
 
         else:
+
+            # Envia comando quando nenhum rosto é detectado
+            enviar_comando("SEM_ROSTO")
 
             # Indica que nenhum rosto foi encontrado
             cv2.putText(
@@ -277,6 +309,7 @@ def main():
     detector.close()
     camera.release()
     cv2.destroyAllWindows()
+    esp32.close()
 
     print("SmartDrive - detector encerrado.")
 
